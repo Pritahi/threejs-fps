@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COPPERLINE // Relay Siege</title>
+    <link rel="stylesheet" href="styles.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./vendor/three/three.module.min.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="game-container">
+        <!-- HUD -->
+        <div id="hud">
+            <div id="crosshair"></div>
+            <div id="hitmarker"></div>
+            <div id="damage-vignette"></div>
+            
+            <div class="hud-top">
+                <div id="round-timer">01:30</div>
+                <div id="score">0 - 0</div>
+            </div>
+
+            <div class="hud-bottom-left">
+                <div id="health-bar"><div id="health-fill"></div></div>
+                <div id="health-value">100</div>
+            </div>
+
+            <div class="hud-bottom-right">
+                <div id="ammo-count">30 / 90</div>
+                <div id="weapon-name">RFL-COPPER</div>
+                <div id="cash-value">$ 800</div>
+            </div>
+
+            <div id="minimap-container">
+                <canvas id="minimap"></canvas>
+            </div>
+
+            <div id="objective-status">RELAY IDLE</div>
+        </div>
+
+        <!-- Overlays -->
+        <div id="ui-overlay" class="hidden">
+            <div id="start-screen" class="panel">
+                <h1>COPPERLINE</h1>
+                <p>Relay Siege</p>
+                <button id="btn-start">DEPLOY</button>
+            </div>
+
+            <div id="buy-menu" class="panel hidden">
+                <h2>MARKET</h2>
+                <div class="buy-grid">
+                    <button data-item="pistol">Sidearm - $200</button>
+                    <button data-item="rifle">Rifle - $2900</button>
+                    <button data-item="sniper">Precision - $4500</button>
+                    <button data-item="smoke">Smoke - $300</button>
+                    <button data-item="frag">Frag - $400</button>
+                </div>
+            </div>
+
+            <div id="pause-menu" class="panel hidden">
+                <h2>PAUSED</h2>
+                <button id="btn-resume">RESUME</button>
+                <button id="btn-restart">RESTART</button>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="main.js"></script>
+</body>
+</html>
