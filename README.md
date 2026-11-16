@@ -21,3 +21,11 @@ Serve this repository over HTTP and open `game/index.html` in a modern browser w
 - **Enter** deploy immediately; **Esc** pause or resume
 
 Buy weapons, armor, and grenades during the 15-second buy phase. Attackers can plant at either northern site; defenders can defuse before the relay fuse expires. Elimination and the round timer also resolve a round.
+
+## Changelog
+
+- Corrected buy-phase skip input, consecutive plant/defuse holds, and planted-relay elimination outcomes.
+- Preserved loadouts only for survivors, and made smoke obscure line of sight and minimap enemy markers.
+- Improved crouch/sprint firing accuracy rules while keeping simulation updates deterministic and fixed-step.
+- Bots investigate recent hostile gunfire, use cover-oriented movement and tactical grenades, split site roles, and hold plant/defuse interactions until complete.
+- Bot squads split relay-site roles, investigate recent nearby gunfire, pause and crouch to fire, assign one smoke and one frag carrier, and hold objectives while planting or defusing.

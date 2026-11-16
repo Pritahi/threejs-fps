@@ -33,23 +33,28 @@ function entity(type, team, x, z, weapon = 'pistol', money = 800) {
     yaw: team === 0 ? 0 : Math.PI, pitch: 0, crouch: false, sprint: false, aim: false, dead: false, armor: 0,
     weapon, mag: gun.mag, reserve: gun.reserve, reload: 0, fireDelay: random() * 300, recoil: 0,
     grenades: { frag: 0, smoke: 0 }, money, ai: type === 'bot' ? { target: null, route: [], routeAt: 0, think: random() * 300,
-      plant: 0, defuse: 0, pathKey: '', pathAt: 0, pathAge: 1000, stuckMs: 0, lastX: x, lastZ: z } : null };
+      plant: 0, defuse: 0, roleSite: x < 0 ? 0 : 1, pathKey: '', pathAt: 0, pathAge: 1000, stuckMs: 0, lastX: x, lastZ: z,
+      lastHeard: -Infinity, investigateX: x, investigateZ: z, investigateUntil: 0, engageMs: 0, burstMs: 0 } : null };
 }
 function newRound() {
   State.phase = 'BUY'; State.timer = BUY_MS; State.elapsed = 0; State.winner = null;
-  State.relay = { status: 'IDLE', site: null, progress: 0, fuse: FUSE_MS, defuse: 0 };
+  State.relay = { status: 'IDLE', site: null, progress: 0, plantOwner: null, plantSite: null, fuse: FUSE_MS, defuse: 0, defuseOwner: null };
   State.tracers.length = 0; State.grenades.length = 0;
   const oldPlayer = State.entities[0], playerMoney = State.cash[0];
-  const carry = oldPlayer ? { weapon: oldPlayer.weapon, armor: oldPlayer.armor, grenades: { ...oldPlayer.grenades } } : null;
+  const carry = oldPlayer&&!oldPlayer.dead ? { weapon: oldPlayer.weapon, armor: oldPlayer.armor, grenades: { ...oldPlayer.grenades } } : null;
   State.entities = [entity('player', 0, -8, 24, carry?.weapon || 'pistol', playerMoney),
     entity('bot', 0, -14, 24, 'rifle', State.cash[0]), entity('bot', 0, -5, 24, 'rifle', State.cash[0]),
     entity('bot', 1, -16, -24, 'rifle', State.cash[1]), entity('bot', 1, 16, -24, 'rifle', State.cash[1]), entity('bot', 1, 0, -25, 'sniper', State.cash[1])];
   if (carry) Object.assign(State.entities[0], carry);
   State.entities.forEach(e => { e.money = e.team === 0 ? State.cash[0] : State.cash[1]; });
+  const smokeCarrier=State.entities.find(e=>e.type==='bot'&&e.team===0),fragCarrier=State.entities.find(e=>e.type==='bot'&&e.team===1);
+  if(smokeCarrier&&smokeCarrier.money>=300){smokeCarrier.money-=300;smokeCarrier.grenades.smoke=1;}
+  if(fragCarrier&&fragCarrier.money>=400){fragCarrier.money-=400;fragCarrier.grenades.frag=1;}
+  State.events.length=0;
 }
 export function startMatch(seed = 12345) {
   State.score = [0, 0]; State.cash = [800, 8000]; State.round = 1;
-  State.rng = (Math.abs(Math.trunc(seed)) % 2147483646) + 1; State.events = []; newRound(); return State;
+  State.rng = (Math.abs(Math.trunc(seed)) % 2147483646) + 1; State.events = []; State.entities = []; newRound(); return State;
 }
 startMatch();
 
@@ -77,20 +82,29 @@ function rayAABB(o, d, maxDistance, box) {
 function wallDistance(o, d, max) {
   let nearest = max;
   for (const b of BOXES) nearest = Math.min(nearest, rayAABB(o, d, nearest, b));
-  for (const g of State.grenades) if (g.kind === 'smoke' && g.fuse < 0 && Math.hypot(o.x-g.x,o.z-g.z) < 4 && Math.abs(o.y-g.y) < 3) nearest = Math.min(nearest, 0);
+  return nearest;
+}
+function smokeDistance(o,d,max) {
+  let nearest=max;
+  for(const g of State.grenades) if(g.kind==='smoke'&&g.fuse<0){
+    const ox=o.x-g.x,oy=o.y-(g.y+1),oz=o.z-g.z,b=ox*d.x+oy*d.y+oz*d.z,c=ox*ox+oy*oy+oz*oz-3.5*3.5,disc=b*b-c;
+    if(disc<0)continue;const near=-b-Math.sqrt(disc),far=-b+Math.sqrt(disc);if(far>=0&&near<=max)nearest=Math.min(nearest,Math.max(0,near));
+  }
   return nearest;
 }
 function look(e, yaw, pitch) {
   const cp = Math.cos(pitch); return { x: -Math.sin(yaw)*cp, y: Math.sin(pitch), z: -Math.cos(yaw)*cp };
 }
-function visible(a, b) {
+export function canSee(a,b) {
   if (!a || !b || !Number.isFinite(b.x) || !Number.isFinite(b.z)) return false;
   const origin = { x:a.x, y:a.y+(a.crouch?1.05:1.55), z:a.z }, target = { x:b.x, y:b.y+(b.crouch?1.05:1.55), z:b.z };
   const dx=target.x-origin.x,dy=target.y-origin.y,dz=target.z-origin.z,length=Math.hypot(dx,dy,dz);
-  return wallDistance(origin,{x:dx/length,y:dy/length,z:dz/length},length) >= length-.2;
+  const direction={x:dx/length,y:dy/length,z:dz/length};
+  return wallDistance(origin,direction,length)>=length-.2&&smokeDistance(origin,direction,length)>=length-.2;
 }
+const visible=canSee;
 function traceShot(e, yaw, pitch, aiming = false) {
-  const gun = WEAPONS[e.weapon], moving = Math.hypot(e.vx,e.vz), spread = gun.spread * (aiming ? .34 : 1) + moving*.003 + e.recoil;
+  const gun = WEAPONS[e.weapon], moving = Math.hypot(e.vx,e.vz), spread = gun.spread * (aiming ? .34 : 1) * (e.crouch ? .75 : 1) * (e.sprint ? 2 : 1) + moving*.003 + e.recoil;
   yaw += (random()-.5)*spread; pitch += (random()-.5)*spread;
   const d = look(e,yaw,pitch), o = { x:e.x, y:e.y+(e.crouch?1.05:1.55), z:e.z }, range = e.weapon === 'sniper' ? 100 : 75;
   let nearest = wallDistance(o,d,range), victim = null, head = false;
@@ -107,7 +121,7 @@ function traceShot(e, yaw, pitch, aiming = false) {
   }
   const end={x:o.x+d.x*nearest,y:o.y+d.y*nearest,z:o.z+d.z*nearest};
   State.tracers.push({from:o,to:end,life:100,team:e.team});
-  event('shot',{entity:e.id,team:e.team,weapon:e.weapon});
+  event('shot',{entity:e.id,team:e.team,weapon:e.weapon,x:e.x,z:e.z});
   if (victim) damage(e,victim,gun.dmg*(head?3:1),head);
 }
 function damage(source,target,amount,head=false) {
@@ -174,25 +188,37 @@ function routeFor(e,target,dt) {
 }
 function aiInput(e,dt) {
   const ai=e.ai;ai.think-=dt;let target=ai.target&&State.entities.find(t=>t.id===ai.target&&!t.dead);
+  if(target&&!visible(e,target)){target=null;ai.target=null;}
   if(ai.think<=0){target=nearestEnemy(e);ai.target=target?.id||null;ai.think=220+random()*180;}
+  if(!target){const sound=State.events.findLast?.(ev=>ev.type==='shot'&&ev.team!==e.team&&ev.time>=State.elapsed-1500&&Math.hypot(ev.x-e.x,ev.z-e.z)<=22);
+    if(sound&&sound.time>ai.lastHeard){ai.lastHeard=sound.time;ai.investigateX=sound.x;ai.investigateZ=sound.z;ai.investigateUntil=State.elapsed+3000;}}
   const attacker=e.team===0;let objective=null;
-  if(attacker&&State.relay.status==='IDLE')objective=SITES.reduce((a,s)=>dist(e,s)<dist(e,a)?s:a,SITES[0]);
+  if(attacker&&State.relay.status==='IDLE')objective=SITES[ai.roleSite];
   else if(!attacker&&State.relay.status==='PLANTED')objective=State.relay.site;
-  const waypoint=routeFor(e,objective||target||{x:0,z:0},dt);
+  else if(!attacker) objective=SITES[ai.roleSite];
+  else if(attacker&&State.relay.status==='PLANTED')objective=State.relay.site;
+  const investigate=!target&&State.elapsed<ai.investigateUntil?{x:ai.investigateX,z:ai.investigateZ}:null;
+  const holdObjective=objective&&((attacker&&State.relay.status==='IDLE')||(!attacker&&State.relay.status==='PLANTED'));
+  const approachOffset=attacker&&State.relay.status==='PLANTED'?4:5;
+  const goal=investigate||(objective?{x:objective.x,z:holdObjective?objective.z:objective.z+approachOffset}:target)||{x:0,z:0};
+  const waypoint=routeFor(e,goal,dt), range=target?dist(e,target):Infinity;
+  let moving=true,crouch=false;
+  if(objective&&dist(e,objective)<2.3){moving=false;if(attacker&&State.relay.status==='IDLE')ai.plant+=dt;}
+  else if(attacker&&State.relay.status==='IDLE')ai.plant=0;
+  else if(target&&range<20){ai.engageMs+=dt;ai.burstMs-=dt;crouch=true;if(ai.burstMs<=0){if(ai.engageMs<700){moving=false;}else{moving=true;ai.engageMs=0;ai.burstMs=180+random()*120;}}}
+  else {ai.engageMs=0;ai.burstMs=0;}
   let yaw=e.yaw,pitch=0,fireNow=false;
-  if(target){const dx=target.x-e.x,dy=target.y+1.2-(e.y+1.5),dz=target.z-e.z,yawTarget=Math.atan2(-dx,-dz),pitchTarget=Math.atan2(dy,Math.hypot(dx,dz));yaw+=clamp(Math.atan2(Math.sin(yawTarget-yaw),Math.cos(yawTarget-yaw)),-dt*.003,dt*.003);pitch=pitchTarget+(random()-.5)*.03;fireNow=dist(e,target)<38&&visible(e,target)&&Math.abs(Math.atan2(Math.sin(yawTarget-yaw),Math.cos(yawTarget-yaw)))<.12;}
+  if(target){const dx=target.x-e.x,dy=target.y+1.2-(e.y+1.5),dz=target.z-e.z,yawTarget=Math.atan2(-dx,-dz),pitchTarget=Math.atan2(dy,Math.hypot(dx,dz));yaw+=clamp(Math.atan2(Math.sin(yawTarget-yaw),Math.cos(yawTarget-yaw)),-dt*.003,dt*.003);pitch=pitchTarget+(random()-.5)*.03;fireNow=range<38&&visible(e,target)&&Math.abs(Math.atan2(Math.sin(yawTarget-yaw),Math.cos(yawTarget-yaw)))<.12;}
   else {const dx=waypoint.x-e.x,dz=waypoint.z-e.z;if(Math.hypot(dx,dz)>1)yaw=Math.atan2(-dx,-dz);}
+  if(e.grenades.smoke&&target&&range>=8&&range<=18&&e.team===0){const gx=target.x, gz=target.z;if(!State.entities.some(a=>!a.dead&&a.team===e.team&&Math.hypot(a.x-gx,a.z-gz)<4))grenade(e,'smoke',Math.atan2(-(gx-e.x),-(gz-e.z)),0);}
+  if(e.grenades.frag&&target&&range>=8&&range<=18&&e.team===1){const gx=target.x,gz=target.z;if(!State.entities.some(a=>!a.dead&&a.team===e.team&&Math.hypot(a.x-gx,a.z-gz)<4))grenade(e,'frag',Math.atan2(-(gx-e.x),-(gz-e.z)),.12);}
   e.yaw=yaw;e.pitch=pitch;
-  if(objective&&dist(e,objective)<2&&attacker&&State.relay.status==='IDLE')ai.plant+=dt;else ai.plant=0;
-  if(objective&&dist(e,objective)<2&&!attacker&&State.relay.status==='PLANTED')ai.defuse+=dt;else ai.defuse=0;
-  return {moveX:waypoint.x-e.x,moveZ:waypoint.z-e.z,yaw,pitch,fire:fireNow,aim:true};
+  return {moveX:moving?waypoint.x-e.x:0,moveZ:moving?waypoint.z-e.z:0,yaw,pitch,fire:fireNow,aim:true,crouch};
 }
 function interactEntity(e, input, dt) {
   if(!input.interact||e.dead)return;
-  const attackers=State.entities.filter(t=>!t.dead&&t.team===0),defenders=State.entities.filter(t=>!t.dead&&t.team===1);
-  if(State.relay.status==='IDLE'&&e.team===0){const site=SITES.find(s=>dist(e,s)<2.4);if(site){State.relay.progress+=dt;if(State.relay.progress>=3000){State.relay.status='PLANTED';State.relay.site=site;State.relay.fuse=FUSE_MS;State.relay.progress=0;event('planted',{site:site.id});}}else State.relay.progress=0;}
-  else if(State.relay.status==='PLANTED'&&e.team===1&&dist(e,State.relay.site)<2.4){State.relay.defuse+=dt;if(State.relay.defuse>=5000){State.relay.status='DEFUSED';event('defused');endRound(1);}}else if(e.team===1)State.relay.defuse=0;
-  if(attackers.length===0)endRound(1);else if(defenders.length===0&&State.relay.status!=='PLANTED')endRound(0);
+  if(State.relay.status==='IDLE'&&e.team===0){const site=SITES.find(s=>dist(e,s)<2.4);if(site){if(State.relay.plantOwner!==e.id||State.relay.plantSite?.id!==site.id){State.relay.progress=0;State.relay.plantOwner=e.id;State.relay.plantSite=site;}State.relay.progress+=dt;if(State.relay.progress>=3000){State.relay.status='PLANTED';State.relay.site=site;State.relay.fuse=FUSE_MS;State.relay.progress=0;State.relay.plantOwner=null;event('planted',{site:site.id});}}}
+  else if(State.relay.status==='PLANTED'&&e.team===1&&dist(e,State.relay.site)<2.4){State.relay.defuseOwner=e.id;State.relay.defuse+=dt;if(State.relay.defuse>=5000){State.relay.status='DEFUSED';event('defused');endRound(1);}}
 }
 export function interact(e=State.entities[0],dt=16) { if(!e||State.phase!=='LIVE')return false;interactEntity(e,{interact:true},dt);return true; }
 function updateGrenades(dt) {
@@ -202,12 +228,27 @@ function updateGrenades(dt) {
     else if(g.kind==='smoke'&&g.fuse<=0){g.fuse=-1;g.vx=0;g.vz=0;g.vy=0;g.life-=dt;if(g.life<=0)State.grenades.splice(i,1);}
   }
 }
-function checkElimination() { const alive=[0,1].map(team=>State.entities.some(e=>!e.dead&&e.team===team));if(!alive[0])endRound(1);else if(!alive[1]&&State.relay.status!=='PLANTED')endRound(0); }
+function checkElimination() {
+  const alive=[0,1].map(team=>State.entities.some(e=>!e.dead&&e.team===team));
+  if(State.relay.status==='PLANTED'){if(!alive[1])endRound(0);return;}
+  if(!alive[0])endRound(1);else if(!alive[1])endRound(0);
+}
 function endRound(winner) { if(State.phase==='END'||State.phase==='MATCH')return;State.phase='END';State.timer=END_MS;State.winner=winner;State.score[winner]++;State.cash[winner]+=3000;State.cash[1-winner]+=1900;event('round-end',{winner,score:[...State.score]});if(State.score[winner]>=4){State.phase='MATCH';State.timer=0;event('match-end',{winner});} }
 function updateObjective(dt) {
-  if(State.relay.status==='PLANTED'){State.relay.fuse-=dt;if(State.relay.fuse<=0)endRound(0);
-    if(!State.entities.some(e=>!e.dead&&e.team===0))endRound(1);if(!State.entities.some(e=>!e.dead&&e.team===1))endRound(0);
-    for(const e of State.entities.filter(e=>e.type==='bot'&&e.team===1&&!e.dead)){if(dist(e,State.relay.site)<2&&visible(e,{...State.relay.site,y:0,crouch:false})){e.ai.defuse+=dt;if(e.ai.defuse>=5000){State.relay.status='DEFUSED';event('defused',{by:e.id});endRound(1);break;}}else e.ai.defuse=0;}
+  if(State.relay.status==='IDLE'){
+    const owner=State.entities.find(e=>e.id===State.relay.plantOwner);
+    if(!owner||owner.dead||owner.team!==0||dist(owner,State.relay.plantSite)>=2.4){State.relay.progress=0;State.relay.plantOwner=null;State.relay.plantSite=null;}
+  }
+  if(State.relay.status==='PLANTED'){
+    State.relay.fuse-=dt;if(State.relay.fuse<=0)endRound(0);
+    if(!State.entities.some(e=>!e.dead&&e.team===1))endRound(0);
+    for(const e of State.entities.filter(e=>e.type==='bot'&&e.team===1&&!e.dead)){
+      if(dist(e,State.relay.site)<2.4&&visible(e,{...State.relay.site,y:0,crouch:false})){e.ai.defuse+=dt;if(e.ai.defuse>=5000){State.relay.status='DEFUSED';event('defused',{by:e.id});endRound(1);break;}}
+      else e.ai.defuse=0;
+    }
+    const playerDefuser=State.entities.find(e=>e.type==='player'&&e.team===1&&!e.dead);
+    if(playerDefuser&&playerDefuser.id===State.relay.defuseOwner&&dist(playerDefuser,State.relay.site)<2.4){if(State.relay.defuse>=5000){State.relay.status='DEFUSED';event('defused',{by:playerDefuser.id});endRound(1);}}
+    else if(State.relay.defuseOwner){State.relay.defuse=0;State.relay.defuseOwner=null;}
   }
 }
 export function step(dt, input = {}) {
@@ -221,12 +262,13 @@ export function step(dt, input = {}) {
   else if(State.phase==='LIVE'&&State.timer<=0&&State.relay.status!=='PLANTED'){endRound(1);return State;}
   for(const e of State.entities){if(e.dead)continue;if(e.fireDelay>0)e.fireDelay-=dt;if(e.recoil>0)e.recoil=Math.max(0,e.recoil-dt*.000018);if(e.reload>0){e.reload-=dt;if(e.reload<=0)finishReload(e);}
     if(e.type==='bot'&&State.phase==='BUY')continue;
+    if(e.type==='player'&&State.phase==='LIVE'&&State.relay.status==='IDLE'&&!input.interact){State.relay.progress=0;State.relay.plantOwner=null;State.relay.plantSite=null;}
+    if(e.type==='player'&&State.phase==='LIVE'&&State.relay.status==='PLANTED'&&e.team===1&&!input.interact){State.relay.defuse=0;State.relay.defuseOwner=null;}
     const control=e.type==='player'?input:aiInput(e,dt);e.yaw=Number.isFinite(control.yaw)?control.yaw:e.yaw;e.pitch=Number.isFinite(control.pitch)?control.pitch:e.pitch;e.aim=!!control.aim;move(e,control,dt);
     if(control.reload)reload(e);if(control.interact&&State.phase==='LIVE')interactEntity(e,control,dt);if(control.fire&&State.phase==='LIVE')shoot(e,control);
-    if(e.type==='bot'&&e.ai){if(e.ai.plant>=3000&&State.relay.status==='IDLE'){const site=SITES.reduce((a,s)=>dist(e,s)<dist(e,a)?s:a,SITES[0]);State.relay.status='PLANTED';State.relay.site=site;State.relay.fuse=FUSE_MS;event('planted',{site:site.id,by:e.id});}}
+    if(e.type==='bot'&&e.ai){if(e.ai.plant>=3000&&State.relay.status==='IDLE'){const site=SITES[e.ai.roleSite];State.relay.status='PLANTED';State.relay.site=site;State.relay.fuse=FUSE_MS;State.relay.plantOwner=e.id;event('planted',{site:site.id,by:e.id});}}
   }
   updateGrenades(dt);updateObjective(dt);
-  if(State.phase==='LIVE'&&State.relay.status==='IDLE'&&!State.entities.some(e=>!e.dead&&e.team===1))endRound(0);
-  if(State.phase==='LIVE'&&State.relay.status!=='PLANTED'&&!State.entities.some(e=>!e.dead&&e.team===0))endRound(1);
+  if(State.phase==='LIVE'&&State.relay.status==='IDLE')checkElimination();
   return State;
 }

@@ -1,4 +1,4 @@
-import { State, startMatch, step, buy, reload, grenade, BOXES, SITES } from './sim.js';
+import { State, startMatch, step, buy, reload, grenade, BOXES, SITES, canSee } from './sim.js';
 import { createView } from './view.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -123,9 +123,10 @@ function addControls() {
 }
 addControls();
 
-function requestLock() { if (!preview && canvas.requestPointerLock) { try { canvas.requestPointerLock(); } catch {} } }
+function requestLock() { if (!preview && canvas.requestPointerLock) { try { const request=canvas.requestPointerLock();request?.catch?.(()=>{}); } catch {} } }
 function deploy(skipBuy = false) {
-  ensureAudio(); startMatch(); deployed = true; paused = false; firing = false; aiming = false; accumulator = 0;
+  ensureAudio(); if(document.activeElement instanceof HTMLElement)document.activeElement.blur();keys.clear();menuOpen=false;
+  startMatch(); deployed = true; paused = false; firing = false; aiming = false; accumulator = 0;
   if (skipBuy) step(FIXED, { skip: true });
   hideOverlay(); if (!preview) requestLock(); updateHUD();
 }
@@ -146,6 +147,7 @@ window.addEventListener('mouseup', event => { if (event.button === 0) firing = f
 container.addEventListener('contextmenu', event => event.preventDefault());
 function buyBySlot(slot) { if (State.phase !== 'BUY') return; buy(player(), ['pistol', 'rifle', 'sniper'][slot]); }
 window.addEventListener('keydown', event => {
+  if(deployed&&event.code==='Enter')event.preventDefault();
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.code)) event.preventDefault();
   if (event.code === 'Escape') {
     if (!deployed) return;
@@ -163,7 +165,7 @@ window.addEventListener('keydown', event => {
   if (event.code === 'KeyG') grenade(player(), 'frag');
   if (event.code === 'KeyH') grenade(player(), 'smoke');
   if (event.code === 'KeyB' && State.phase === 'BUY') { overlay('buy'); if (document.pointerLockElement) document.exitPointerLock(); }
-  if (event.code === 'Enter' && State.phase === 'BUY') { step(FIXED, { skip: true }); processEvents(); }
+  if (event.code === 'Enter' && !paused && State.phase === 'BUY') { step(FIXED, { skip: true }); processEvents(); }
   if (event.code === 'Digit1') buyBySlot(0); if (event.code === 'Digit2') buyBySlot(1); if (event.code === 'Digit3') buyBySlot(2);
 });
 window.addEventListener('keyup', event => keys.delete(event.code));
@@ -187,7 +189,7 @@ function drawMinimap() {
   for (const site of SITES) { ctx.fillStyle='#dfa15e';ctx.fillText(site.id,px(site.x),pz(site.z)); }
   const me=player(); if (!me) return;
   for (const e of State.entities) if (!e.dead) {
-    if (e.team !== me.team && Math.hypot(e.x-me.x,e.z-me.z)>19) continue;
+    if (e.team !== me.team && !canSee(me,e)) continue;
     ctx.fillStyle=e.type==='player'?'#69f4e6':e.team===me.team?'#4dbbb5':'#ec6949';ctx.beginPath();ctx.arc(px(e.x),pz(e.z),e.type==='player'?4:3.3,0,Math.PI*2);ctx.fill();
   }
 }
@@ -206,8 +208,8 @@ function updateHUD() {
   else if(State.relay.progress>0) objective.textContent=`PLANTING ${Math.min(100,Math.floor(State.relay.progress/30))}% — HOLD E`;
   else if(State.phase==='BUY') objective.textContent=`BUY PHASE — $${p.money.toLocaleString()}  ·  B MARKET  ·  ENTER DEPLOY`;
   else objective.textContent=`RELAY IDLE — ATTACKERS PLANT AT A / B`;
-  if(!p.hp||p.dead){bannerTitle.textContent='ELIMINATED';bannerSub.textContent=State.phase==='END'?'ROUND COMPLETE — NEXT ROUND IN A MOMENT':'SPECTATING';}
-  else if(State.phase==='MATCH'){bannerTitle.textContent=State.winner===0?'COPPERLINE VICTORY':'HOSTILES WIN';bannerSub.textContent='FIRST TO FOUR ROUNDS';}
+  if(State.phase==='MATCH'){bannerTitle.textContent=State.winner===0?'COPPERLINE VICTORY':'HOSTILES WIN';bannerSub.textContent='FIRST TO FOUR ROUNDS';}
+  else if(!p.hp||p.dead){bannerTitle.textContent='ELIMINATED';bannerSub.textContent=State.phase==='END'?'ROUND COMPLETE — NEXT ROUND IN A MOMENT':'SPECTATING';}
   else if(State.phase==='END'){bannerTitle.textContent=State.winner===0?'ROUND WON':'ROUND LOST';bannerSub.textContent=`${State.score[0]} — ${State.score[1]}  ·  NEXT ROUND` ;}
   else if(State.phase==='BUY'){bannerTitle.textContent='BUY PHASE';bannerSub.textContent=`DEPLOYING IN ${formatTime(State.timer)}`;}
   else {bannerTitle.textContent='';bannerSub.textContent='';}
