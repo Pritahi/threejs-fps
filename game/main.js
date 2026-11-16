@@ -1,4 +1,4 @@
-import { State, startMatch, step, buy, reload, grenade } from './sim.js';
+import { State, startMatch, step, buy, reload, grenade, BOXES, SITES } from './sim.js';
 import { createView } from './view.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -8,13 +8,14 @@ const view = createView(container);
 const canvas = view.renderer.domElement;
 canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block';
 container.insertBefore(canvas, container.firstChild);
-const hud = $('#hud'), overlay = $('#ui-overlay'), startPanel = $('#start-screen'), buyPanel = $('#buy-menu'), pausePanel = $('#pause-menu');
+const hud = $('#hud'), overlayEl = $('#ui-overlay'), startPanel = $('#start-screen'), buyPanel = $('#buy-menu'), pausePanel = $('#pause-menu');
 const style = document.createElement('style');
 style.textContent = `
  #hud{z-index:2;color:#e8e5d9;text-shadow:0 2px 5px #091018;pointer-events:none}
  #ui-overlay{z-index:5;background:rgba(7,13,20,.78);backdrop-filter:blur(3px)}
  #crosshair{border:0;width:18px;height:18px}
  #crosshair:before,#crosshair:after{content:"";position:absolute;background:#c5f7ed;box-shadow:0 0 5px #54e8e2}
+ #crosshair.aiming{transform:translate(-50%,-50%) scale(.72)}
  #crosshair:before{width:2px;height:18px;left:8px}#crosshair:after{height:2px;width:18px;top:8px}
  #hitmarker{position:absolute;left:50%;top:50%;width:22px;height:22px;transform:translate(-50%,-50%) rotate(45deg);opacity:0;pointer-events:none}
  #hitmarker.on{opacity:1}#hitmarker:before,#hitmarker:after{content:"";position:absolute;background:#ffe6b0}
@@ -41,14 +42,18 @@ const phaseLabel = document.createElement('div'); phaseLabel.id = 'phase-label';
 const teamStatus = document.createElement('div'); teamStatus.id = 'team-status'; hud?.append(teamStatus);
 const killFeed = document.createElement('div'); killFeed.id = 'kill-feed'; hud?.append(killFeed);
 const banner = document.createElement('div'); banner.id = 'banner'; hud?.append(banner);
+const bannerTitle = document.createElement('div'); bannerTitle.id = 'banner-title'; banner.append(bannerTitle);
 const bannerSub = document.createElement('div'); bannerSub.id = 'banner-sub'; banner.append(bannerSub);
+const matchRestart = document.createElement('button'); matchRestart.id = 'match-restart'; matchRestart.textContent = 'PLAY AGAIN'; matchRestart.hidden = true;
+matchRestart.style.cssText = 'pointer-events:auto;font:inherit;font-size:14px;letter-spacing:2px;margin-top:16px;padding:9px 18px;color:#f2c18c;background:#172630;border:1px solid #b17b4b;cursor:pointer';
+banner.append(matchRestart); matchRestart.addEventListener('click', () => deploy(false));
 const objective = $('#objective-status');
 const crosshair = $('#crosshair'), hitmarker = $('#hitmarker'), vignette = $('#damage-vignette');
 const minimap = $('#minimap'), ctx = minimap?.getContext('2d');
 const startButton = $('#btn-start'), resumeButton = $('#btn-resume'), restartButton = $('#btn-restart');
 const keys = new Set();
 const FIXED = 1000 / 60;
-let accumulator = 0, lastFrame = performance.now(), deployed = false, paused = false, preview = false;
+let accumulator = 0, lastFrame = performance.now(), deployed = false, paused = false, menuOpen = false, preview = false;
 let firing = false, aiming = false, sensitivity = .0022, masterVolume = .22, audio = null, hitUntil = 0, hurtUntil = 0;
 let lastEventTime = -1, lastSeenEvents = new WeakSet(), feed = [];
 
@@ -67,7 +72,8 @@ function tone(freq, duration = .08, type = 'square', volume = .12, endFreq = fre
   osc.connect(gain); gain.connect(audio.gain); osc.start(now); osc.stop(now + duration);
 }
 function playEvent(event) {
-  if (event.type === 'hit') {
+  if (event.type === 'shot' && event.entity === player()?.id) tone(170, .07, 'sawtooth', .085, 62);
+  else if (event.type === 'hit') {
     if (event.target === player()?.id) { hurtUntil = performance.now() + 180; tone(115, .13, 'sawtooth', .12, 55); }
     else if (event.source === player()?.id) { hitUntil = performance.now() + 110; tone(event.head ? 1150 : 790, .055, 'square', .08, 620); }
   } else if (event.type === 'kill') {
@@ -84,15 +90,21 @@ function processEvents() {
   for (const event of State.events) if (!lastSeenEvents.has(event)) { lastSeenEvents.add(event); playEvent(event); }
 }
 function overlay(which) {
+  menuOpen = which === 'buy';
   overlayElement(true);
   for (const panel of [startPanel, buyPanel, pausePanel]) panel?.classList.add('hidden');
   if (which === 'start') startPanel?.classList.remove('hidden');
   if (which === 'buy') buyPanel?.classList.remove('hidden');
   if (which === 'pause') pausePanel?.classList.remove('hidden');
 }
-function overlayElement(show) { overlay?.classList.toggle('hidden', !show); }
+function overlayElement(show) { overlayEl?.classList.toggle('hidden', !show); }
 function hideOverlay() { overlayElement(false); }
 function addControls() {
+  if (buyPanel && !$('#buy-armor')) {
+    const armorButton=document.createElement('button');armorButton.id='buy-armor';armorButton.dataset.item='armor';armorButton.textContent='Armor — $650';
+    const closeButton=document.createElement('button');closeButton.id='close-market';closeButton.textContent='CLOSE MARKET';closeButton.addEventListener('click',()=>{menuOpen=false;hideOverlay();requestLock();});
+    buyPanel.querySelector('.buy-grid')?.append(armorButton);buyPanel.append(closeButton);
+  }
   if (startPanel && !$('#controls-copy')) {
     const copy = document.createElement('div'); copy.id = 'controls-copy';
     copy.innerHTML = '<b>W A S D</b> move &nbsp; <b>Mouse</b> aim &nbsp; <b>LMB</b> fire &nbsp; <b>RMB</b> aim<br><b>R</b> reload &nbsp; <b>CTRL</b> crouch &nbsp; <b>SHIFT</b> sprint &nbsp; <b>E</b> plant / defuse<br><b>G / H</b> frag / smoke &nbsp; <b>B</b> market &nbsp; <b>1 / 2 / 3</b> buy weapon<br><b>ENTER</b> skip buy &nbsp; <b>ESC</b> pause &nbsp; First team to four rounds wins.';
@@ -114,7 +126,7 @@ addControls();
 function requestLock() { if (!preview && canvas.requestPointerLock) { try { canvas.requestPointerLock(); } catch {} } }
 function deploy(skipBuy = false) {
   ensureAudio(); startMatch(); deployed = true; paused = false; firing = false; aiming = false; accumulator = 0;
-  if (skipBuy) { for (let i = 0; i < 151; i++) step(100, {}); }
+  if (skipBuy) step(FIXED, { skip: true });
   hideOverlay(); if (!preview) requestLock(); updateHUD();
 }
 startButton?.addEventListener('click', () => deploy(false));
@@ -123,7 +135,7 @@ restartButton?.addEventListener('click', () => deploy(false));
 container.addEventListener('click', event => { if (event.target.closest('button')) return; if (deployed && paused) { paused = false; hideOverlay(); requestLock(); } });
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === canvas) { if (deployed && !paused) hideOverlay(); }
-  else if (deployed && !preview && !paused && State.phase !== 'MATCH') { paused = true; firing = false; aiming = false; overlay('pause'); }
+  else if (deployed && !preview && !paused && !menuOpen && State.phase !== 'MATCH') { paused = true; firing = false; aiming = false; overlay('pause'); }
 });
 document.addEventListener('mousemove', event => {
   if (!deployed || paused || preview || document.pointerLockElement !== canvas) return;
@@ -137,6 +149,7 @@ window.addEventListener('keydown', event => {
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.code)) event.preventDefault();
   if (event.code === 'Escape') {
     if (!deployed) return;
+    if (menuOpen) { menuOpen = false; hideOverlay(); requestLock(); return; }
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     else if (!paused) { paused = true; firing = false; aiming = false; overlay('pause'); }
     else { paused = false; hideOverlay(); requestLock(); }
@@ -150,7 +163,7 @@ window.addEventListener('keydown', event => {
   if (event.code === 'KeyG') grenade(player(), 'frag');
   if (event.code === 'KeyH') grenade(player(), 'smoke');
   if (event.code === 'KeyB' && State.phase === 'BUY') { overlay('buy'); if (document.pointerLockElement) document.exitPointerLock(); }
-  if (event.code === 'Enter' && State.phase === 'BUY') { for (let i = 0; i < 151; i++) step(100, {}); }
+  if (event.code === 'Enter' && State.phase === 'BUY') { step(FIXED, { skip: true }); processEvents(); }
   if (event.code === 'Digit1') buyBySlot(0); if (event.code === 'Digit2') buyBySlot(1); if (event.code === 'Digit3') buyBySlot(2);
 });
 window.addEventListener('keyup', event => keys.delete(event.code));
@@ -169,17 +182,15 @@ function drawMinimap() {
   const w = minimap.width = minimap.clientWidth * devicePixelRatio, h = minimap.height = minimap.clientHeight * devicePixelRatio;
   ctx.clearRect(0, 0, w, h); ctx.fillStyle = '#111a22'; ctx.fillRect(0, 0, w, h);
   const sx = w / 60, sy = h / 60, px = x => (x + 30) * sx, pz = z => (z + 30) * sy;
-  ctx.fillStyle = '#39454b'; for (const b of (awaitlessBoxes)) ctx.fillRect(px(b.x-b.w/2),pz(b.z-b.d/2),b.w*sx,b.d*sy);
+  ctx.fillStyle = '#39454b'; for (const b of BOXES) ctx.fillRect(px(b.x-b.w/2),pz(b.z-b.d/2),b.w*sx,b.d*sy);
   ctx.font = `${Math.max(10, w*.09)}px monospace`; ctx.textAlign='center';
-  for (const site of awaitlessSites) { ctx.fillStyle='#dfa15e';ctx.fillText(site.id,px(site.x),pz(site.z)); }
+  for (const site of SITES) { ctx.fillStyle='#dfa15e';ctx.fillText(site.id,px(site.x),pz(site.z)); }
   const me=player(); if (!me) return;
   for (const e of State.entities) if (!e.dead) {
     if (e.team !== me.team && Math.hypot(e.x-me.x,e.z-me.z)>19) continue;
     ctx.fillStyle=e.type==='player'?'#69f4e6':e.team===me.team?'#4dbbb5':'#ec6949';ctx.beginPath();ctx.arc(px(e.x),pz(e.z),e.type==='player'?4:3.3,0,Math.PI*2);ctx.fill();
   }
 }
-const awaitlessBoxes = (await import('./sim.js')).BOXES;
-const awaitlessSites = (await import('./sim.js')).SITES;
 function updateHUD() {
   const p=player(); if(!p)return;
   $('#round-timer').textContent=formatTime(State.timer);$('#score').textContent=`${State.score[0]}  —  ${State.score[1]}`;
@@ -187,7 +198,7 @@ function updateHUD() {
   $('#health-value').textContent=`${Math.max(0,Math.ceil(p.hp))}${p.armor?`  +${Math.ceil(p.armor)} ARMOR`:''}`;
   $('#health-fill').style.width=`${Math.max(0,p.hp)}%`;$('#health-fill').style.background=p.hp<35?'#ed644f':'#54e8e2';
   $('#ammo-count').textContent=p.reload>0?'RELOADING':`${p.mag}  /  ${p.reserve}`;
-  $('#weapon-name').textContent=({pistol:'SIDEARM // M9',rifle:'RIFLE // COPPER',sniper:'PRECISION // LANCE'})[p.weapon]||p.weapon.toUpperCase();
+  $('#weapon-name').textContent=({pistol:'SIDEARM // PIN',rifle:'RIFLE // COPPER',sniper:'PRECISION // LANCE'})[p.weapon]||p.weapon.toUpperCase();
   $('#cash-value').textContent=`$ ${p.money.toLocaleString()}  ·  FRAG ${p.grenades.frag} / SMOKE ${p.grenades.smoke}`;
   const alive=[0,1].map(team=>State.entities.filter(e=>e.team===team&&!e.dead).length);
   teamStatus.innerHTML=`<span style="color:#5be0d7">COPPER ${alive[0]}</span><br><span style="color:#f07a55">HOSTILE ${alive[1]}</span>`;
@@ -195,11 +206,12 @@ function updateHUD() {
   else if(State.relay.progress>0) objective.textContent=`PLANTING ${Math.min(100,Math.floor(State.relay.progress/30))}% — HOLD E`;
   else if(State.phase==='BUY') objective.textContent=`BUY PHASE — $${p.money.toLocaleString()}  ·  B MARKET  ·  ENTER DEPLOY`;
   else objective.textContent=`RELAY IDLE — ATTACKERS PLANT AT A / B`;
-  if(!p.hp||p.dead){banner.firstChild.textContent='ELIMINATED';bannerSub.textContent=State.phase==='END'?'ROUND COMPLETE — NEXT ROUND IN A MOMENT':'SPECTATING';}
-  else if(State.phase==='MATCH'){banner.firstChild.textContent=State.winner===0?'COPPERLINE VICTORY':'HOSTILES WIN';bannerSub.textContent='FIRST TO FOUR ROUNDS';}
-  else if(State.phase==='END'){banner.firstChild.textContent=State.winner===0?'ROUND WON':'ROUND LOST';bannerSub.textContent=`${State.score[0]} — ${State.score[1]}  ·  NEXT ROUND` ;}
-  else if(State.phase==='BUY'){banner.firstChild.textContent='BUY PHASE';bannerSub.textContent=`DEPLOYING IN ${formatTime(State.timer)}`;}
-  else {banner.firstChild.textContent='';bannerSub.textContent='';}
+  if(!p.hp||p.dead){bannerTitle.textContent='ELIMINATED';bannerSub.textContent=State.phase==='END'?'ROUND COMPLETE — NEXT ROUND IN A MOMENT':'SPECTATING';}
+  else if(State.phase==='MATCH'){bannerTitle.textContent=State.winner===0?'COPPERLINE VICTORY':'HOSTILES WIN';bannerSub.textContent='FIRST TO FOUR ROUNDS';}
+  else if(State.phase==='END'){bannerTitle.textContent=State.winner===0?'ROUND WON':'ROUND LOST';bannerSub.textContent=`${State.score[0]} — ${State.score[1]}  ·  NEXT ROUND` ;}
+  else if(State.phase==='BUY'){bannerTitle.textContent='BUY PHASE';bannerSub.textContent=`DEPLOYING IN ${formatTime(State.timer)}`;}
+  else {bannerTitle.textContent='';bannerSub.textContent='';}
+  matchRestart.hidden = State.phase !== 'MATCH';
   const now=performance.now();crosshair?.classList.toggle('aiming',aiming);hitmarker?.classList.toggle('on',now<hitUntil);
   if(vignette)vignette.style.boxShadow=now<hurtUntil?'inset 0 0 120px rgba(228,45,34,.5)':'inset 0 0 100px rgba(211,66,66,0)';
   killFeed.innerHTML=feed.filter(item=>now-item.at<5000).map(item=>`<div>${item.text}</div>`).join('');feed=feed.filter(item=>now-item.at<5000);

@@ -29,10 +29,11 @@ function random() { State.rng = (State.rng * 16807) % 2147483647; return (State.
 function event(type, data = {}) { State.events.push({ type, time: State.elapsed, ...data }); if (State.events.length > 64) State.events.shift(); }
 function entity(type, team, x, z, weapon = 'pistol', money = 800) {
   const gun = WEAPONS[weapon];
-  return { id: `${type}-${State.round}-${State.entities.length}`, type, team, hp: 100, x, y: 0, z, vx: 0, vz: 0,
+  return { id: `${type}-${team}-${x}-${z}`, type, team, hp: 100, x, y: 0, z, vx: 0, vz: 0,
     yaw: team === 0 ? 0 : Math.PI, pitch: 0, crouch: false, sprint: false, aim: false, dead: false, armor: 0,
     weapon, mag: gun.mag, reserve: gun.reserve, reload: 0, fireDelay: random() * 300, recoil: 0,
-    grenades: { frag: 0, smoke: 0 }, money, ai: type === 'bot' ? { target: null, route: [], routeAt: 0, think: random() * 300, plant: 0, defuse: 0 } : null };
+    grenades: { frag: 0, smoke: 0 }, money, ai: type === 'bot' ? { target: null, route: [], routeAt: 0, think: random() * 300,
+      plant: 0, defuse: 0, pathKey: '', pathAt: 0, pathAge: 1000, stuckMs: 0, lastX: x, lastZ: z } : null };
 }
 function newRound() {
   State.phase = 'BUY'; State.timer = BUY_MS; State.elapsed = 0; State.winner = null;
@@ -40,8 +41,8 @@ function newRound() {
   State.tracers.length = 0; State.grenades.length = 0;
   const oldPlayer = State.entities[0], playerMoney = State.cash[0];
   const carry = oldPlayer ? { weapon: oldPlayer.weapon, armor: oldPlayer.armor, grenades: { ...oldPlayer.grenades } } : null;
-  State.entities = [entity('player', 0, 0, 24, carry?.weapon || 'pistol', playerMoney),
-    entity('bot', 0, -6, 24, 'rifle', State.cash[0]), entity('bot', 0, 6, 24, 'rifle', State.cash[0]),
+  State.entities = [entity('player', 0, -8, 24, carry?.weapon || 'pistol', playerMoney),
+    entity('bot', 0, -14, 24, 'rifle', State.cash[0]), entity('bot', 0, -5, 24, 'rifle', State.cash[0]),
     entity('bot', 1, -16, -24, 'rifle', State.cash[1]), entity('bot', 1, 16, -24, 'rifle', State.cash[1]), entity('bot', 1, 0, -25, 'sniper', State.cash[1])];
   if (carry) Object.assign(State.entities[0], carry);
   State.entities.forEach(e => { e.money = e.team === 0 ? State.cash[0] : State.cash[1]; });
@@ -83,6 +84,7 @@ function look(e, yaw, pitch) {
   const cp = Math.cos(pitch); return { x: -Math.sin(yaw)*cp, y: Math.sin(pitch), z: -Math.cos(yaw)*cp };
 }
 function visible(a, b) {
+  if (!a || !b || !Number.isFinite(b.x) || !Number.isFinite(b.z)) return false;
   const origin = { x:a.x, y:a.y+(a.crouch?1.05:1.55), z:a.z }, target = { x:b.x, y:b.y+(b.crouch?1.05:1.55), z:b.z };
   const dx=target.x-origin.x,dy=target.y-origin.y,dz=target.z-origin.z,length=Math.hypot(dx,dy,dz);
   return wallDistance(origin,{x:dx/length,y:dy/length,z:dz/length},length) >= length-.2;
@@ -95,7 +97,8 @@ function traceShot(e, yaw, pitch, aiming = false) {
   for (const t of State.entities) {
     if (t === e || t.dead || t.team === e.team) continue;
     const center = {x:t.x,y:t.y+(t.crouch?1.05:1.35),z:t.z};
-    for (const [cy,r,isHead] of [[center.y,.43,false],[center.y+.48,.23,true]]) {
+    const crouch = !!t.crouch;
+    for (const [cy,r,isHead] of [[t.y+(crouch?.6:.95),.45,false],[t.y+(crouch?1.05:1.55),.23,true]]) {
       const ox=o.x-center.x, oy=o.y-cy, oz=o.z-center.z, projection=-(ox*d.x+oy*d.y+oz*d.z);
       if (projection < 0 || projection > nearest) continue;
       const qx=ox+d.x*projection,qy=oy+d.y*projection,qz=oz+d.z*projection;
@@ -104,6 +107,7 @@ function traceShot(e, yaw, pitch, aiming = false) {
   }
   const end={x:o.x+d.x*nearest,y:o.y+d.y*nearest,z:o.z+d.z*nearest};
   State.tracers.push({from:o,to:end,life:100,team:e.team});
+  event('shot',{entity:e.id,team:e.team,weapon:e.weapon});
   if (victim) damage(e,victim,gun.dmg*(head?3:1),head);
 }
 function damage(source,target,amount,head=false) {
@@ -117,7 +121,7 @@ function shoot(e, input) {
   traceShot(e,input.yaw ?? e.yaw,input.pitch ?? e.pitch,!!input.aim);
   if(e.mag===0&&e.reserve>0) reload(e);
 }
-export function fire(e=State.entities[0], yaw=e.yaw, pitch=e.pitch, aim=false) { if(!e||e.dead)return false; const before=State.tracers.length;shoot(e,{yaw,pitch,aim});return State.tracers.length>before; }
+export function fire(e=State.entities[0], yaw=e?.yaw, pitch=e?.pitch, aim=false) { if(!e||e.dead||State.phase!=='LIVE')return false; const before=State.tracers.length;shoot(e,{yaw,pitch,aim});return State.tracers.length>before; }
 export function reload(e=State.entities[0]) {
   if(!e||e.dead||e.reload>0||e.mag>=WEAPONS[e.weapon].mag||e.reserve<=0)return false;
   e.reload=WEAPONS[e.weapon].reload;event('reload',{entity:e.id});return true;
@@ -130,28 +134,51 @@ export function buy(e,item) {
   if((item==='frag'||item==='smoke')&&e.grenades[item]<1){const price=item==='frag'?400:300;if(e.money<price)return false;e.money-=price;State.cash[e.team]-=price;e.grenades[item]++;return true;}
   return false;
 }
-export function grenade(e=State.entities[0],kind='frag',yaw=e.yaw,pitch=e.pitch) {
-  if(!e||e.dead||!['frag','smoke'].includes(kind)||e.grenades[kind]<=0)return false;
+export function grenade(e=State.entities[0],kind='frag',yaw=e?.yaw,pitch=e?.pitch) {
+  if(!e||e.dead||State.phase!=='LIVE'||!['frag','smoke'].includes(kind)||e.grenades[kind]<=0)return false;
   const d=look(e,yaw,pitch),speed=kind==='frag'?15:12;e.grenades[kind]--;
   State.grenades.push({kind,owner:e.id,team:e.team,x:e.x,y:e.y+1.35,z:e.z,vx:d.x*speed,vz:d.z*speed,vy:d.y*speed+4,fuse:kind==='frag'?1800:1250,life:kind==='smoke'?6500:0});
   event('grenade',{kind,x:e.x,z:e.z});return true;
 }
 
 function nearestEnemy(e) { let best=null,range=Infinity;for(const t of State.entities)if(!t.dead&&t.team!==e.team){const d=dist(e,t);if(d<range&&visible(e,t)){best=t;range=d;}}return best; }
-function routeFor(e,target) {
-  const candidates=[{x:0,z:11},{x:-6,z:4},{x:6,z:-4},{x:-15,z:-15},{x:15,z:-15},target];
-  const start={x:e.x,z:e.z};const route=[];let point=start;
-  while(candidates.length){let index=0,best=Infinity;candidates.forEach((p,i)=>{const d=Math.hypot(p.x-point.x,p.z-point.z);if(d<best){best=d;index=i;}});point=candidates.splice(index,1)[0];route.push(point);}
-  return route;
+function gridPoint(index) { return { x: -29 + (index % 30) * 2, z: -29 + Math.floor(index / 30) * 2 }; }
+function gridIndex(x,z) { return clamp(Math.round((z+29)/2),0,29)*30+clamp(Math.round((x+29)/2),0,29); }
+function navPath(start,goal) {
+  const startIndex=gridIndex(start.x,start.z),goalIndex=gridIndex(goal.x,goal.z),passable=new Uint8Array(900);
+  for(let i=0;i<900;i++){const p=gridPoint(i);passable[i]=hitBox(p.x,p.z,.45)?0:1;}
+  if(!passable[startIndex])passable[startIndex]=1;
+  let target=goalIndex;
+  if(!passable[target]){let best=Infinity;for(let i=0;i<900;i++)if(passable[i]){const p=gridPoint(i),d=(p.x-goal.x)**2+(p.z-goal.z)**2;if(d<best){best=d;target=i;}}}
+  const gScore=new Float32Array(900);gScore.fill(Infinity);gScore[startIndex]=0;
+  const parent=new Int16Array(900);parent.fill(-1);const open=[startIndex],closed=new Uint8Array(900),dirs=[[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+  const heuristic=i=>{const p=gridPoint(i),dx=Math.abs(p.x-goal.x),dz=Math.abs(p.z-goal.z);return Math.max(dx,dz)+(Math.SQRT2-1)*Math.min(dx,dz);};
+  let found=false,expanded=0;
+  while(open.length&&expanded<900){let bestAt=0,bestF=Infinity;for(let j=0;j<open.length;j++){const f=gScore[open[j]]+heuristic(open[j]);if(f<bestF){bestF=f;bestAt=j;}}
+    const current=open.splice(bestAt,1)[0];if(current===target){found=true;break;}if(closed[current])continue;closed[current]=1;expanded++;
+    const cx=current%30,cz=Math.floor(current/30);
+    for(const [dx,dz] of dirs){const nx=cx+dx,nz=cz+dz;if(nx<0||nx>=30||nz<0||nz>=30)continue;const next=nz*30+nx;if(!passable[next]||closed[next])continue;
+      if(dx&&dz&&(!passable[cz*30+nx]||!passable[nz*30+cx]))continue;
+      const cost=gScore[current]+(dx&&dz?2.828427:2);if(cost>=gScore[next])continue;parent[next]=current;gScore[next]=cost;if(!open.includes(next))open.push(next);
+    }
+  }
+  if(!found)return [];
+  const path=[];for(let at=target;at!==startIndex&&at>=0;at=parent[at])path.push(gridPoint(at));path.reverse();return path;
+}
+function routeFor(e,target,dt) {
+  const ai=e.ai,key=`${Math.round(target.x/2)},${Math.round(target.z/2)}`;ai.pathAge+=dt;
+  const moved=Math.hypot(e.x-ai.lastX,e.z-ai.lastZ);ai.stuckMs=moved<.07?ai.stuckMs+dt:0;ai.lastX=e.x;ai.lastZ=e.z;
+  if(key!==ai.pathKey||ai.pathAge>=1000||ai.stuckMs>=1000||!ai.route.length){ai.route=navPath(e,target);ai.pathKey=key;ai.pathAt=0;ai.pathAge=0;ai.stuckMs=0;}
+  while(ai.pathAt<ai.route.length-1&&Math.hypot(e.x-ai.route[ai.pathAt].x,e.z-ai.route[ai.pathAt].z)<1.25)ai.pathAt++;
+  return ai.route[ai.pathAt]||target;
 }
 function aiInput(e,dt) {
   const ai=e.ai;ai.think-=dt;let target=ai.target&&State.entities.find(t=>t.id===ai.target&&!t.dead);
   if(ai.think<=0){target=nearestEnemy(e);ai.target=target?.id||null;ai.think=220+random()*180;}
   const attacker=e.team===0;let objective=null;
   if(attacker&&State.relay.status==='IDLE')objective=SITES.reduce((a,s)=>dist(e,s)<dist(e,a)?s:a,SITES[0]);
-  else if(!attacker&&State.relay.status==='PLANTED')objective=State.relay;
-  if(!ai.route.length||ai.routeAt>=ai.route.length){ai.route=routeFor(e,objective||target||{x:0,z:0});ai.routeAt=0;}
-  let waypoint=ai.route[ai.routeAt];if(Math.hypot(e.x-waypoint.x,e.z-waypoint.z)<1.2&&ai.routeAt<ai.route.length-1)waypoint=ai.route[++ai.routeAt];
+  else if(!attacker&&State.relay.status==='PLANTED')objective=State.relay.site;
+  const waypoint=routeFor(e,objective||target||{x:0,z:0},dt);
   let yaw=e.yaw,pitch=0,fireNow=false;
   if(target){const dx=target.x-e.x,dy=target.y+1.2-(e.y+1.5),dz=target.z-e.z,yawTarget=Math.atan2(-dx,-dz),pitchTarget=Math.atan2(dy,Math.hypot(dx,dz));yaw+=clamp(Math.atan2(Math.sin(yawTarget-yaw),Math.cos(yawTarget-yaw)),-dt*.003,dt*.003);pitch=pitchTarget+(random()-.5)*.03;fireNow=dist(e,target)<38&&visible(e,target)&&Math.abs(Math.atan2(Math.sin(yawTarget-yaw),Math.cos(yawTarget-yaw)))<.12;}
   else {const dx=waypoint.x-e.x,dz=waypoint.z-e.z;if(Math.hypot(dx,dz)>1)yaw=Math.atan2(-dx,-dz);}
@@ -167,7 +194,7 @@ function interactEntity(e, input, dt) {
   else if(State.relay.status==='PLANTED'&&e.team===1&&dist(e,State.relay.site)<2.4){State.relay.defuse+=dt;if(State.relay.defuse>=5000){State.relay.status='DEFUSED';event('defused');endRound(1);}}else if(e.team===1)State.relay.defuse=0;
   if(attackers.length===0)endRound(1);else if(defenders.length===0&&State.relay.status!=='PLANTED')endRound(0);
 }
-export function interact(e=State.entities[0],dt=16) { if(!e)return false;interactEntity(e,{interact:true},dt);return true; }
+export function interact(e=State.entities[0],dt=16) { if(!e||State.phase!=='LIVE')return false;interactEntity(e,{interact:true},dt);return true; }
 function updateGrenades(dt) {
   for(let i=State.grenades.length-1;i>=0;i--){const g=State.grenades[i];g.fuse-=dt;g.x+=g.vx*dt/1000;g.z+=g.vz*dt/1000;g.y+=g.vy*dt/1000;g.vy-=9.8*dt/1000;
     if(hitBox(g.x,g.z,.15)){g.x-=g.vx*dt/1000;g.z-=g.vz*dt/1000;g.vx*=-.35;g.vz*=-.35;}if(g.y<.15){g.y=.15;g.vy=Math.abs(g.vy)*.35;g.vx*=.8;g.vz*=.8;}
@@ -188,11 +215,14 @@ export function step(dt, input = {}) {
   for(const t of State.tracers)t.life-=dt;State.tracers=State.tracers.filter(t=>t.life>0);
   if(State.phase==='MATCH')return State;
   if(State.phase==='END'){State.timer-=dt;if(State.timer<=0){State.round++;newRound();}return State;}
-  State.timer-=dt;if(State.phase==='BUY'&&State.timer<=0){State.phase='LIVE';State.timer=LIVE_MS;event('live');}
+  if(State.phase==='BUY'&&input.skip){State.phase='LIVE';State.timer=LIVE_MS;event('live',{skip:true});}
+  else State.timer-=dt;
+  if(State.phase==='BUY'&&State.timer<=0){State.phase='LIVE';State.timer=LIVE_MS;event('live');}
   else if(State.phase==='LIVE'&&State.timer<=0&&State.relay.status!=='PLANTED'){endRound(1);return State;}
   for(const e of State.entities){if(e.dead)continue;if(e.fireDelay>0)e.fireDelay-=dt;if(e.recoil>0)e.recoil=Math.max(0,e.recoil-dt*.000018);if(e.reload>0){e.reload-=dt;if(e.reload<=0)finishReload(e);}
+    if(e.type==='bot'&&State.phase==='BUY')continue;
     const control=e.type==='player'?input:aiInput(e,dt);e.yaw=Number.isFinite(control.yaw)?control.yaw:e.yaw;e.pitch=Number.isFinite(control.pitch)?control.pitch:e.pitch;e.aim=!!control.aim;move(e,control,dt);
-    if(control.reload)reload(e);if(control.interact)interactEntity(e,control,dt);if(control.fire&&State.phase==='LIVE')shoot(e,control);
+    if(control.reload)reload(e);if(control.interact&&State.phase==='LIVE')interactEntity(e,control,dt);if(control.fire&&State.phase==='LIVE')shoot(e,control);
     if(e.type==='bot'&&e.ai){if(e.ai.plant>=3000&&State.relay.status==='IDLE'){const site=SITES.reduce((a,s)=>dist(e,s)<dist(e,a)?s:a,SITES[0]);State.relay.status='PLANTED';State.relay.site=site;State.relay.fuse=FUSE_MS;event('planted',{site:site.id,by:e.id});}}
   }
   updateGrenades(dt);updateObjective(dt);

@@ -7,11 +7,11 @@ const mat = (color, roughness = .78, metalness = 0) => new THREE.MeshStandardMat
 const boxGeo = new THREE.BoxGeometry(1, 1, 1), sphereGeo = new THREE.SphereGeometry(1, 16, 12), cylGeo = new THREE.CylinderGeometry(1, 1, 1, 12);
 
 export function createView(container) {
-  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x182431); scene.fog = new THREE.FogExp2(0x263440, .0125);
-  const camera = new THREE.PerspectiveCamera(74, 1, .08, 180); camera.rotation.order = 'YXZ';
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x182431); scene.fog = new THREE.FogExp2(0x263440, .008);
+  const camera = new THREE.PerspectiveCamera(74, 1, .08, 180); camera.rotation.order = 'YXZ'; scene.add(camera);
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)); renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.12;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.35;
   renderer.outputColorSpace = THREE.SRGBColorSpace; container.appendChild(renderer.domElement);
 
   const m = {
@@ -22,12 +22,12 @@ export function createView(container) {
     redGlow: new THREE.MeshStandardMaterial({ color: C.red, emissive: C.red, emissiveIntensity: 1.8 }),
     cyanGlow: new THREE.MeshStandardMaterial({ color: C.cyan, emissive: C.cyan, emissiveIntensity: 1.8 }),
   };
-  const hemi = new THREE.HemisphereLight(0xaec4d2, 0x27201b, 1.25); scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffc68e, 2.5); sun.position.set(-28, 38, 22); sun.castShadow = true;
+  const hemi = new THREE.HemisphereLight(0xaec4d2, 0x27201b, 3); scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xffc68e, 3); sun.position.set(-28, 38, 22); sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024); sun.shadow.camera.left = -38; sun.shadow.camera.right = 38;
   sun.shadow.camera.top = 38; sun.shadow.camera.bottom = -38; sun.shadow.bias = -.0004; scene.add(sun);
   const sunset = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: 0xf29358 })); sunset.position.set(-42, 18, -72); sunset.scale.set(13, 9, 1); scene.add(sunset);
-  const fill = new THREE.AmbientLight(0x627b92, .42); scene.add(fill);
+  const fill = new THREE.AmbientLight(0x627b92, .9); scene.add(fill);
 
   function mesh(geometry, material, parent = scene, x = 0, y = 0, z = 0) {
     const o = new THREE.Mesh(geometry, material); o.position.set(x, y, z); o.castShadow = true; o.receiveShadow = true; parent.add(o); return o;
@@ -91,19 +91,19 @@ export function createView(container) {
   }
   // Exterior skyline: refinery stacks, gantries and silent tank silhouettes beyond the wall.
   for (let i = 0; i < 15; i++) {
-    const x = -48 + i * 6.8, z = -42 - (i % 3) * 5, h = 5 + (i * 7 % 12), silhouette = i % 3 ? m.panel : m.dark;
+    const x = -48 + i * 6.8, z = -42 - (i % 3) * 5, h = 5 + (i * 7 % 12), silhouette = i % 3 ? m.panel : m.black;
     block(scene, silhouette, x, h / 2, z, 3 + i % 4, h, 2.5);
-    if (i % 4 === 0) { cylinder(scene, m.dark, x + 1, h + 2, z, .55, 4); cylinder(scene, m.copper, x + 1, h + 4.05, z, .62, .14); }
+    if (i % 4 === 0) { cylinder(scene, m.black, x + 1, h + 2, z, .55, 4); cylinder(scene, m.copper, x + 1, h + 4.05, z, .62, .14); }
   }
   for (const x of [-42, 42]) {
-    cylinder(scene, m.dark, x, 4, 0, 3.7, 8); cylinder(scene, m.panel, x, 8.2, 0, 3.9, .5);
+    cylinder(scene, m.black, x, 4, 0, 3.7, 8); cylinder(scene, m.panel, x, 8.2, 0, 3.9, .5);
     for (let y = 1; y < 8; y += 1.5) cylinder(scene, m.steel, x, y, 0, 3.82, .1);
   }
   // Site relay towers with illuminated CanvasTexture signs and warm practical lights.
   const siteObjects = new Map();
   for (const site of SITES) {
     const group = new THREE.Group(); group.position.set(site.x, 0, site.z); scene.add(group);
-    block(group, m.dark, 0, .13, 0, 3.4, .26, 3.4); block(group, m.trim, 0, .3, 0, 3.05, .08, 3.05);
+    block(group, m.black, 0, .13, 0, 3.4, .26, 3.4); block(group, m.trim, 0, .3, 0, 3.05, .08, 3.05);
     for (const [x,z] of [[-1.25,-1.25],[1.25,-1.25],[-1.25,1.25],[1.25,1.25]]) cylinder(group,m.steel,x,.75,z,.09, .9);
     block(group,m.panel,0,1.05,0,1.45,1.45,1.25); block(group,m.copper,0,1.82,0,1.65,.14,1.45);
     for (const side of [-1,1]) block(group,m.black,side*.77,1.05,0,.1,1.48,1.4);
@@ -151,7 +151,7 @@ export function createView(container) {
   }
   const humans=new Map();
   // Detailed first-person receiver, optic rail, front sight and handguard.
-  const weapon=new THREE.Group();camera.add(weapon);weapon.position.set(.34,-.31,-.57);
+  const weapon=new THREE.Group();camera.add(weapon);weapon.position.set(.34,-.28,-.7);
   block(weapon,m.black,0,0,-.31,.19,.18,.55);block(weapon,m.steel,0,.01,-.69,.065,.07,.42);
   block(weapon,m.trim,0,.105,-.29,.17,.035,.47);block(weapon,m.black,0,-.2,-.2,.13,.29,.13);
   block(weapon,m.black,-.09,-.02,-.07,.08,.17,.2);block(weapon,m.copper,0,.13,-.3,.13,.04,.08);
@@ -182,12 +182,12 @@ export function createView(container) {
     if(player){const speed=Math.hypot(player.vx||0,player.vz||0),bob=Math.sin(clock*10)*Math.min(.025,speed*.005);
       camera.position.set(player.x,player.crouch?1.12:1.65,player.z);camera.rotation.set(player.pitch||0,player.yaw||0,0,'YXZ');
       camera.position.y+=speed>.2?bob:0;const ads=!!player.aim;camera.fov=ads?59:74;camera.updateProjectionMatrix();
-      weapon.visible=!player.dead;weapon.position.x=.34+(player.crouch?-.025:0);weapon.position.y=-.31+(player.crouch?-.03:0);
+      weapon.visible=!player.dead;weapon.position.x=.34+(player.crouch?-.025:0);weapon.position.y=-.28+(player.crouch?-.03:0);
       if(state.tracers?.length>previousShots){shotFlash=.07;weapon.position.z=-.64;}previousShots=state.tracers?.length||0;
-      if(player.reload>0){const progress=1-Math.min(1,player.reload/2400);weapon.position.y=-.31-Math.sin(progress*Math.PI)*.23;weapon.rotation.x=Math.sin(progress*Math.PI)*.32;}
+      if(player.reload>0){const progress=1-Math.min(1,player.reload/2400);weapon.position.y=-.28-Math.sin(progress*Math.PI)*.23;weapon.rotation.x=Math.sin(progress*Math.PI)*.32;}
     }
     shotFlash=Math.max(0,shotFlash-dt/1000);muzzleFlash.visible=shotFlash>0;
-    weapon.position.z+=( -.57-weapon.position.z)*Math.min(1,dt*.018);weapon.rotation.x*=Math.max(0,1-dt*.012);
+    weapon.position.z+=( -.7-weapon.position.z)*Math.min(1,dt*.018);weapon.rotation.x*=Math.max(0,1-dt*.012);
     for(let i=0;i<tracerPool.length;i++){const line=tracerPool[i],t=state.tracers?.[i];line.visible=!!t;if(t){const a=line.geometry.attributes.position.array;a[0]=t.from.x;a[1]=t.from.y;a[2]=t.from.z;a[3]=t.to.x;a[4]=t.to.y;a[5]=t.to.z;line.geometry.attributes.position.needsUpdate=true;line.material.color.setHex(t.team===0?C.cyan:C.red);line.material.opacity=Math.min(1,t.life/100);}}
     let smokeIndex=0;for(const g of state.grenades||[])if(g.kind==='smoke'&&g.fuse<0&&smokeIndex<smokePool.length){const cloud=smokePool[smokeIndex++];cloud.visible=true;cloud.position.set(g.x,g.y+1.1,g.z);const scale=1.2+Math.sin(clock*1.6)*.1;cloud.scale.set(scale*1.8,scale,scale*1.8);cloud.material.opacity=.19;}
     while(smokeIndex<smokePool.length)smokePool[smokeIndex++].visible=false;
